@@ -68,9 +68,22 @@ class ThreatModeling:
     def __init__(self, service_description, model):
         self.service_description = service_description
         self.model = model
-        self.openai_client = OpenAI(api_key=os.getenv(Config.OPENAI_KEY))
-        self.anthropic_client = Client(api_key=os.getenv(Config.ANTHROPIC_KEY))
-        self.ollama_client = OllamaClient()
+        
+        self.openai_client = None
+        self.anthropic_client = None
+        self.ollama_client = None
+
+        if self.model in ['gpt-3.5-turbo', 'gpt-4']:
+            openai_key = os.getenv(Config.OPENAI_KEY)
+            if openai_key:
+                self.openai_client = OpenAI(api_key=openai_key)
+        elif self.model == 'claude':
+            anthropic_key = os.getenv(Config.ANTHROPIC_KEY)
+            if anthropic_key:
+                self.anthropic_client = Client(api_key=anthropic_key)
+        elif self.model == 'mistral':
+            # Uses environment variable OLLAMA_HOST if set (e.g., for Docker)
+            self.ollama_client = OllamaClient()
 
     @staticmethod
     def convert_data_flow_to_json(data_flows):
@@ -98,10 +111,10 @@ class ThreatModeling:
             raise ValueError(f"Unsupported model: {self.model}")
 
     def generate_threat_modeling_openai(self):
-        if not self.openai_client.api_key:
+        if not self.openai_client:
             return "<p>OpenAI key was not provided or is incorrect. AI Threat Modeling was not performed.</p>"
 
-        prompt = f"""Perform a thorough threat modeling analysis for the provided service, utilizing the STRIDE framework, OWASP Top 10 2021, and OWASP Top 10 CI/CD Security Risks guidelines. Return the analysis in JSON format with the following structure:
+        prompt = f"""Perform a thorough threat modeling analysis for the provided service, utilizing the STRIDE framework, OWASP Top 10 2021, and OWASP Top 10 CI/CD Security Risks guidelines. Return the analysis in JSON format with the following structure. Generate multiple threats.
         {{
             "threats": [
                 {{
@@ -110,8 +123,7 @@ class ThreatModeling:
                     "categories": ["STRIDE Category", "OWASP Top 10 2021 Category", "OWASP Top 10 CI/CD Security Risks Category"],
                     "remediation": "Recommended steps or strategies to mitigate or resolve the threat.",
                     "validator": "🟢 {self.model}"
-                }},
-                ...
+                }}
             ]
         }}
 
@@ -123,7 +135,7 @@ class ThreatModeling:
             response = self.openai_client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a security expert. Provide a threat analysis."},
+                    {"role": "system", "content": "You are a security expert. Provide a threat analysis. DO NOT output ellipses (...) in the JSON array."},
                     {"role": "user", "content": prompt}
                 ]
             )
@@ -148,10 +160,10 @@ class ThreatModeling:
             return f"<p>Error generating threat modeling: {str(e)}</p>"
 
     def generate_threat_modeling_anthropic(self):
-        if not self.anthropic_client.api_key:
+        if not self.anthropic_client:
             return "<p>Anthropic key was not provided or is incorrect. AI Threat Modeling was not performed.</p>"
 
-        prompt = f"""Perform a thorough threat modeling analysis for the provided service, utilizing the STRIDE framework, OWASP Top 10 2021, and OWASP Top 10 CI/CD Security Risks guidelines. Return the analysis in JSON format with the following structure:
+        prompt = f"""Perform a thorough threat modeling analysis for the provided service, utilizing the STRIDE framework, OWASP Top 10 2021, and OWASP Top 10 CI/CD Security Risks guidelines. Return the analysis in JSON format with the following structure. Generate multiple threats.
         {{
             "threats": [
                 {{
@@ -160,16 +172,13 @@ class ThreatModeling:
                     "categories": ["STRIDE Category", "OWASP Top 10 2021 Category", "OWASP Top 10 CI/CD Security Risks Category"],
                     "remediation": "Recommended steps or strategies to mitigate or resolve the threat.",
                     "validator": "🟢 {self.model}"
-                }},
-                ...
+                }}
             ]
         }}
 
         Service data:
         {self.service_description}
         """
-
-        log(f"Anthropic API Request: {prompt}")
 
         try:
             response = self.anthropic_client.messages.create(
@@ -182,9 +191,7 @@ class ThreatModeling:
                     }
                 ]
             )
-            log(f"Anthropic API Response: {response}")
             response_text = response.content[0].text.strip()
-            log(f"Anthropic API Response Content: {response_text}")
 
             json_start = response_text.find("{")
             json_end = response_text.rfind("}") + 1
@@ -205,57 +212,67 @@ class ThreatModeling:
             return f"<p>Error generating threat modeling: {str(e)}</p>"
         
     def generate_threat_modeling_ollama(self):
-
-        prompt = f"""Perform a thorough threat modeling analysis for the provided service, utilizing the STRIDE framework, OWASP Top 10 2021, and OWASP Top 10 CI/CD Security Risks guidelines. Return the analysis in JSON format with the following structure:
+        prompt = f"""Perform a thorough threat modeling analysis for the provided service. 
+        Utilize the STRIDE framework, OWASP Top 10 2021, and OWASP Top 10 CI/CD Security Risks guidelines.
+        
+        You must return your response in this exact JSON structure:
         {{
             "threats": [
                 {{
                     "title": "Threat Title",
                     "description": "Detailed threat description.",
-                    "categories": ["STRIDE Category", "OWASP Top 10 2021 Category", "OWASP Top 10 CI/CD Security Risks Category"],
-                    "remediation": "Recommended steps or strategies to mitigate or resolve the threat.",
+                    "categories": ["STRIDE", "OWASP"],
+                    "remediation": "Recommended mitigation steps.",
                     "validator": "🟢 {self.model}"
-                }},
-                ...
+                }}
             ]
         }}
+
+        Do not use ellipses (...) or placeholders. Output multiple realistic threats based on the data.
 
         Service data:
         {self.service_description}
         """
 
-        log(f"Ollama API Request: {prompt}")
-
         try:
             response = self.ollama_client.generate(
-                model="mistral",
+                model="mistral:7b",
                 prompt=prompt,
                 format="json",
-                stream= False,
-                system="You are a security expert."
+                options={"temperature": 0.1}, 
+                stream=False,
+                system="You are an expert security engineer. Identify threats and output strictly valid JSON matching the requested schema."
             )
-            log(f"Ollama API Response: {response}")
-            response_text = response['response'].strip()
-
-            log(f"Ollama API Response Content: {response_text}")
             
-            json_start = response_text.find("{")
-            json_end = response_text.rfind("}") + 1
-            if json_start != -1 and json_end != -1:
-                json_content = response_text[json_start:json_end].strip()
-                try:
-                    threat_analysis_json = json.loads(json_content)
-                    return json.dumps(threat_analysis_json)
-                except json.JSONDecodeError:
-                    log("Failed to parse extracted JSON content.")
-            else:
-                log("Failed to extract JSON content from the response.")
+            response_text = response['response'].strip()
+            if not response_text:
+                return "[]"
 
-            return "[]"
+            try:
+                threat_analysis_json = json.loads(response_text)
+                if isinstance(threat_analysis_json, list):
+                    threat_analysis_json = {"threats": threat_analysis_json}
+                return json.dumps(threat_analysis_json)
+            except json.JSONDecodeError as err:
+                log(f"Ollama JSON format parse failed: {err}. Attempting fallback parsing...")
+                
+                json_start = response_text.find("{")
+                json_end = response_text.rfind("}") + 1
+                if json_start == -1:
+                    json_start = response_text.find("[")
+                    json_end = response_text.rfind("]") + 1
+                    
+                if json_start != -1 and json_end != -1:
+                    clean_content = response_text[json_start:json_end]
+                    threat_analysis_json = json.loads(clean_content)
+                    if isinstance(threat_analysis_json, list):
+                        threat_analysis_json = {"threats": threat_analysis_json}
+                    return json.dumps(threat_analysis_json)
+                raise err
 
         except Exception as e:
             log(f"Error generating threat modeling with Ollama: {str(e)}")
-            return f"<p>Error generating threat modeling: {str(e)}</p>"
+            return "[]"
 
     @staticmethod
     def validate_threats(threats, validation_model, client):
@@ -264,10 +281,10 @@ class ThreatModeling:
             prompt = f"""
             Please validate the following threat:
             {{
-                "title": "{threat['title']}",
-                "description": "{threat['description']}",
-                "categories": {threat['categories']},
-                "remediation": "{threat['remediation']}"
+                "title": "{threat.get('title', threat.get('Title', ''))}",
+                "description": "{threat.get('description', threat.get('Description', ''))}",
+                "categories": {threat.get('categories', threat.get('Categories', []))},
+                "remediation": "{threat.get('remediation', threat.get('Remediation', ''))}"
             }}
             Is this a valid threat? Respond with 'Yes' or 'No'.
             """
@@ -284,34 +301,25 @@ class ThreatModeling:
                 response = client.messages.create(
                     max_tokens=5,
                     model="claude-3-haiku-20240307",
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": prompt
-                        }
-                    ]
+                    messages=[{"role": "user", "content": prompt}]
                 )
-                log(f"Validation prompt for Claude: {prompt}")  
-                log(f"Validation response from Claude: {response.content}") 
                 is_valid = 'yes' in response.content[0].text.strip().lower()
             elif validation_model == 'mistral':
                 response = client.generate(
-                        model="mistral",
+                        model="mistral:7b",
                         prompt=prompt,
-                        format="json",
                         stream=False,
                         system="You are a security expert. Validate the threat."
                 )
-                log(f"Validation prompt for Mistral: {prompt}")  
-                log(f"Validation response from Mistral: {response['response']}") 
                 is_valid = 'yes' in response['response'].lower()
             else:
                 raise ValueError(f"Unsupported validation model: {validation_model}")
 
+            validator = threat.get("validator", threat.get("Validator", ""))
             if is_valid:
-                threat['validator'] = f"{threat['validator']} 🟢 {validation_model}"
+                threat['validator'] = f"{validator} 🟢 {validation_model}"
             else:
-                threat['validator'] = f"{threat['validator']} 🔴 {validation_model}"
+                threat['validator'] = f"{validator} 🔴 {validation_model}"
 
             validated_threats.append(threat)
         return validated_threats
@@ -321,9 +329,10 @@ class ThreatModeling:
         unique_threats = []
         seen_titles = set()
         for threat in threats:
-            if threat['title'] not in seen_titles:
+            title = threat.get('title', threat.get('Title', ''))
+            if title not in seen_titles:
                 unique_threats.append(threat)
-                seen_titles.add(threat['title'])
+                seen_titles.add(title)
         return unique_threats
 
 class HTMLReportRenderer:
@@ -363,10 +372,6 @@ class PrintManager:
         print("  --model               Select the model version: gpt-3.5-turbo or gpt-4")
         print("  --cross-validation    Perform cross-validation using two LLMs")
         print("  --debug               Enable debug logging\n")
-        print(f"{PrintManager.HIGHLIGHT_STYLE}Arguments:{PrintManager.NORMAL_STYLE}")
-        print("  yaml_file             Path to the YAML file containing the service information.\n")
-        print(f"{PrintManager.HIGHLIGHT_STYLE}Example:{PrintManager.NORMAL_STYLE}")
-        print("  python3 TaaC.py auth_service.yaml --model gpt-3.5-turbo --cross-validation --debug")
 
     @staticmethod
     def print_progress(file_name):
@@ -381,25 +386,46 @@ class PrintManager:
     def print_error(message):
         print(f"{PrintManager.ERROR_STYLE}Error:{PrintManager.NORMAL_STYLE} {message}")
 
+def safe_extract_threats(parsed_json):
+    """Safely extracts the list of threats regardless of casing."""
+    if isinstance(parsed_json, list):
+        return parsed_json
+    if isinstance(parsed_json, dict):
+        for key in ['threats', 'Threats', 'THREATS']:
+            if key in parsed_json:
+                return parsed_json[key]
+    return []
+
 def convert_json_to_html(json_data):
     try:
-        threats = json.loads(json_data)
-        if isinstance(threats, list):
-            return '<tr><td colspan="7">No threats found.</td></tr>'
-        else:
-            threats = threats['threats']
-    except (json.JSONDecodeError, KeyError) as e:
+        parsed_data = json.loads(json_data)
+        threats = safe_extract_threats(parsed_data)
+    except (json.JSONDecodeError, TypeError) as e:
         log(f"Error parsing JSON data: {str(e)}")
-        threats = []
+        return '<tr><td colspan="7">Error parsing AI response format.</td></tr>'
+
+    if not threats:
+        return '<tr><td colspan="7">No threats found.</td></tr>'
 
     html = ''
     for threat in threats:
+        title = threat.get("title", threat.get("Title", "N/A"))
+        validator = threat.get("validator", threat.get("Validator", "🟢"))
+        description = threat.get("description", threat.get("Description", "N/A"))
+        remediation = threat.get("remediation", threat.get("Remediation", "N/A"))
+        
+        categories = threat.get("categories", threat.get("Categories", []))
+        if isinstance(categories, list):
+            cat_str = ", ".join(categories)
+        else:
+            cat_str = str(categories)
+
         html += '<tr>\n'
-        html += f'<td contenteditable="true">{threat["title"]}</td>\n'
-        html += f'<td>{threat["validator"]}</td>\n'
-        html += f'<td contenteditable="true">{threat["description"]}</td>\n'
-        html += f'<td contenteditable="true">{", ".join(threat["categories"])}</td>\n'
-        html += f'<td contenteditable="true">{threat["remediation"]}</td>\n'
+        html += f'<td contenteditable="true">{title}</td>\n'
+        html += f'<td>{validator}</td>\n'
+        html += f'<td contenteditable="true">{description}</td>\n'
+        html += f'<td contenteditable="true">{cat_str}</td>\n'
+        html += f'<td contenteditable="true">{remediation}</td>\n'
         html += '<td><input type="checkbox" onchange="toggleStrikeThrough(this)"></td>\n'
         html += '<td>'
         html += '<button class="table-button" onclick="saveThreat(this.parentNode.parentNode)">Save</button>'
@@ -448,18 +474,20 @@ def main():
         validation_model = Config.CROSS_VALIDATION
         log(f"Performing cross-validation using {validation_model}")
         threat_modeling_validation = ThreatModeling(json.dumps(service_info, indent=2), validation_model)
-        threats = json.loads(threat_analysis_json)['threats']
+        
+        parsed_analysis = json.loads(threat_analysis_json)
+        threats = safe_extract_threats(parsed_analysis)
+        
         log(f"Threats identified by {args.model}: {len(threats)}")
         
-        validated_threats = ThreatModeling.validate_threats(
-            threats,
-            validation_model,
-            threat_modeling_validation.openai_client if validation_model.startswith('gpt') else  threat_modeling_validation.ollama_client if validation_model == 'mistral' else  threat_modeling_validation.anthropic_client
-        )
-        log(f"Validated threats: {len(validated_threats)}")
-        
-        threat_analysis_json = json.dumps({'threats': validated_threats})
-        log(f"Updated threat analysis JSON with validation results: {threat_analysis_json}")
+        if threats:
+            validated_threats = ThreatModeling.validate_threats(
+                threats,
+                validation_model,
+                threat_modeling_validation.openai_client if validation_model.startswith('gpt') else  threat_modeling_validation.ollama_client if validation_model == 'mistral' else  threat_modeling_validation.anthropic_client
+            )
+            threat_analysis_json = json.dumps({'threats': validated_threats})
+            log(f"Updated threat analysis JSON with validation results.")
 
     threat_analysis_html = convert_json_to_html(threat_analysis_json)
     

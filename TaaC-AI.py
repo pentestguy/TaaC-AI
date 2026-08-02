@@ -2,9 +2,6 @@ import os
 import sys
 import yaml
 import json
-from openai import OpenAI
-from anthropic import Client
-from ollama import Client as OllamaClient
 import argparse
 from datetime import datetime, date
 from jinja2 import Environment, FileSystemLoader
@@ -76,12 +73,16 @@ class ThreatModeling:
         if self.model in ['gpt-3.5-turbo', 'gpt-4']:
             openai_key = os.getenv(Config.OPENAI_KEY)
             if openai_key:
+                from openai import OpenAI
                 self.openai_client = OpenAI(api_key=openai_key)
         elif self.model == 'claude':
             anthropic_key = os.getenv(Config.ANTHROPIC_KEY)
             if anthropic_key:
+                from anthropic import Client
                 self.anthropic_client = Client(api_key=anthropic_key)
         elif self.model == 'mistral':
+            from ollama import Client as OllamaClient
+
             # Uses environment variable OLLAMA_HOST if set (e.g., for Docker)
             self.ollama_client = OllamaClient()
 
